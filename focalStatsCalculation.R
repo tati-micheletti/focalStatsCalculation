@@ -20,7 +20,7 @@ defineModule(sim, list(
   timeunit = "year",
   citation = list("citation.bib"),
   documentation = deparse(list("README.txt", "focalStatsCalculation.Rmd")),
-  reqdPkgs = list(),
+  reqdPkgs = list("PredictiveEcology/reproducible@development (>= 2.0.9.9001)", "googledrive"),
   parameters = rbind(
     defineParameter("doAssertions", "logical", TRUE, NA, NA,
                     paste0("Should it do assertions? This consumes time but increases testing")),
@@ -30,6 +30,10 @@ defineModule(sim, list(
     defineParameter("classesToExcludeInLCC", "numeric", c(0, 20, 31, 32, 33, 40, 50, 80, 81, 100), NA, NA,
                     paste0("The landcover classes to convert to 0 in the RTM (so the focal does not)",
                            "consider these as habitat for the birds")),
+    defineParameter("getDisturbanceRasterInModule", "logical", TRUE, NA, NA,
+                    paste0("Creating the disturbanceRaster inside the module to deal with ",
+                           "RAM and disk space constraints. If passing another layer, set this",
+                           "to FALSE")),
     defineParameter("nx", "numeric", 2, 1, NA, 
                     paste0("The number of tiles to split raster into, along horizontal axis")),
     defineParameter("ny", "numeric", 2, 1, NA, 
@@ -60,7 +64,7 @@ defineModule(sim, list(
                     paste0("Normally, the module will get this info from the main raster, but to check",
                            " if the data already exists, we need to pass the information."))
   ),
-  inputObjects = bind_rows(
+  inputObjects = bindrows(
     expectsInput(objectName = "disturbanceRaster", objectClass = "RasterLayer", 
                  desc = paste0("Raster where pixels are representing the year of the disturbance.",
                                "Currently, we are using Hermosilla et al. 2019, available on",
@@ -81,7 +85,7 @@ defineModule(sim, list(
                  desc = paste0("Raster where pixels are representing the type of landcover ",
                                "to be used to mask the RTM to pixels where habitat is not available"))
   ),
-  outputObjects = bind_rows(
+  outputObjects = bindrows(
     createsOutput(objectName = "focalYearList", objectClass = "list", 
                   desc = paste0("This is a list of rasters, each one for a year of ",
                                 "focal disturbances")),
@@ -119,7 +123,7 @@ doEvent.focalStatsCalculation = function(sim, eventTime, eventType) {
       }
     },
     tile = {
-
+      browser()
       sim$splittedDisturbance <- tryCatch({
         Cache(SpaDES.tools::splitRaster,
               r = sim$disturbanceRaster,
@@ -205,14 +209,13 @@ doEvent.focalStatsCalculation = function(sim, eventTime, eventType) {
   cacheTags <- c(currentModule(sim), "function:.inputObjects") ## uncomment this if Cache is being used
   dPath <- asPath(getOption("reproducible.destinationPath", dataPath(sim)), 1)
   message(currentModule(sim), ": using dataPath '", dPath, "'.")
-  
   if (!suppliedElsewhere("studyArea", sim)){
-    studyArea <- reproducible::Cache(usefulFuns::defineStudyArea,
-                                     testArea = TRUE)
-    
-    sim$studyArea <- Cache(reproducible::postProcess, studyArea, 
-                           destinationPath = SpaDES.core::Paths$inputPath,
-                           filename2 = "OntarioStudyArea",
+    sim$studyArea <- Cache(prepInputs, url = "https://drive.google.com/file/d/1of3bIlPnLMDmumerLX-thILHtAoJpeiC", 
+                           targetFile = "studyArea.shp", 
+                           archive = "studyArea.zip", 
+                           alsoExtract = "similar", 
+                           destinationPath = getOption("reproducible.inputPaths"), 
+                           fun = "terra::vect",
                            userTags = c("objectName:studyArea",
                                         cacheTags,
                                         "goal:sA"),
@@ -221,27 +224,30 @@ doEvent.focalStatsCalculation = function(sim, eventTime, eventType) {
   }
   
   if (!suppliedElsewhere("disturbanceRaster", sim)){
-    sim$disturbanceRaster <- reproducible::Cache(reproducible::prepInputs,
-                                             url = paste0(
-                                               "https://opendata.nfis.org/downloads/",
-                                               "forest_change/CA_forest_harvest_mask",
-                                               "_year_1985_2015.zip"),
-                                             targetFile = "CA_harvest_year_1985_2015.tif",
-                                             destinationPath = SpaDES.core::Paths$inputPath,
-                                             filename2 = "disturbanceRasterProcessed",
-                                             studyArea = sim$studyArea,
-                                             userTags = c("objectName:disturbanceRaster",
-                                                          cacheTags,
-                                                          "outFun:Cache", "goal:prepDisturbanceRas"),
-                                             omitArgs = c("overwrite", "destinationPath"))
+    if (!P(sim)$getDisturbanceRasterInModule){
+      disturbanceRasterPath <- Cache(prepInputs, url = paste0(
+        "https://opendata.nfis.org/downloads/",
+        "forest_change/CA_forest_harvest_mask",
+        "_year_1985_2015.zip"),
+        studyArea = sim$studyArea,
+        userTags = c("objectName:disturbanceRaster",
+                     cacheTags,
+                     "outFun:Cache", "goal:prepDisturbanceRas"),
+        omitArgs = c("overwrite", "destinationPath"),
+        targetFile = "CA_harvest_year_1985_2015.tif",
+        destinationPath = getOption("reproducible.inputPaths"))
+    }
   }
   
   if (!suppliedElsewhere("rasterToMatch", sim)){
-    studyAreaSF <- sf::st_as_sf(sim$studyArea)
-    studyAreaSF$RTM <- 1
-    sim$rasterToMatch <- fasterize::fasterize(sf = studyAreaSF, 
-                                          raster = sim$disturbanceRaster, 
-                                          field = "RTM")
+    sim$rasterToMatch <- Cache(prepInputs, url = "https://drive.google.com/file/d/1hSn2Rdiyou9znGRfmJlsUJ-p2fcHX6Uy", 
+                               targetFile = "processedRTM.tif", 
+                               archive = "processedRTM.zip", 
+                               studyArea = sim$studyArea,
+                               destinationPath = getOption("reproducible.inputPaths"), 
+                               fun = "terra::rast",
+                               userTags = c("originPoint:global", "objectName:rasterToMatch"),
+                               omitArgs = "destinationPath")
   }
   return(invisible(sim))
 }
